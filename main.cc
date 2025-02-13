@@ -6,38 +6,39 @@
 #include <vector>
 
 namespace typed_lisp {
-class lisp_node {
+
+class node {
  public:
-  virtual ~lisp_node() = default;
+  virtual ~node() = default;
   virtual void accept(class node_visitor* visitor) = 0;
 };
 
-class atom_node : public lisp_node {
+class atom : public node {
  public:
   std::string value;
 
-  explicit atom_node(std::string val) : value(std::move(val)) {}
+  explicit atom(std::string val) : value(std::move(val)) {}
 
   void accept(node_visitor* visitor) override;
 };
 
-class list_node : public lisp_node {
+class list : public node {
  public:
-  std::vector<std::shared_ptr<lisp_node>> children;
+  std::vector<std::shared_ptr<node>> children;
 
   void accept(node_visitor* visitor) override;
 };
 
 class node_visitor {
  public:
-  virtual void visit(atom_node* node) = 0;
-  virtual void visit(list_node* node) = 0;
+  virtual void visit(atom* node) = 0;
+  virtual void visit(list* node) = 0;
   virtual ~node_visitor() = default;
 };
 
-void atom_node::accept(node_visitor* visitor) { visitor->visit(this); }
+void atom::accept(node_visitor* visitor) { visitor->visit(this); }
 
-void list_node::accept(node_visitor* visitor) {
+void list::accept(node_visitor* visitor) {
   visitor->visit(this);
 
   for (auto& child : children) {
@@ -56,7 +57,7 @@ class lisp_parser {
     }
   }
 
-  std::shared_ptr<lisp_node> parse_expression() {
+  std::shared_ptr<node> parse_expression() {
     skip_whitespace();
 
     if (current_pos >= input.length()) {
@@ -70,16 +71,17 @@ class lisp_parser {
     return parse_atom();
   }
 
-  std::shared_ptr<list_node> parse_list() {
+  std::shared_ptr<list> parse_list() {
     if (input[current_pos] != '(') {
       throw std::runtime_error("expected opening parenthesis");
     }
+
     current_pos++;
 
-    auto list = std::make_shared<list_node>();
+    auto lst = std::make_shared<list>();
 
     while (current_pos < input.length() && input[current_pos] != ')') {
-      list->children.push_back(parse_expression());
+      lst->children.push_back(parse_expression());
       skip_whitespace();
     }
 
@@ -89,10 +91,10 @@ class lisp_parser {
 
     current_pos++;
 
-    return list;
+    return lst;
   }
 
-  std::shared_ptr<atom_node> parse_atom() {
+  std::shared_ptr<atom> parse_atom() {
     size_t start = current_pos;
 
     while (current_pos < input.length() && !std::isspace(input[current_pos]) &&
@@ -102,13 +104,13 @@ class lisp_parser {
 
     std::string value = input.substr(start, current_pos - start);
 
-    return std::make_shared<atom_node>(value);
+    return std::make_shared<atom>(value);
   }
 
  public:
   explicit lisp_parser(std::string input_str) : input(std::move(input_str)) {}
 
-  std::shared_ptr<lisp_node> parse() {
+  std::shared_ptr<node> parse() {
     current_pos = 0;
 
     return parse_expression();
@@ -116,27 +118,34 @@ class lisp_parser {
 };
 }  // namespace typed_lisp
 
-// === tests ===
-
 class tokens_print_visitor : public typed_lisp::node_visitor {
  public:
-  void visit(typed_lisp::atom_node* node) override {
+  void visit(typed_lisp::atom* node) override {
     std::cout << node->value << " ";
   }
 
-  void visit(typed_lisp::list_node* node) override { std::cout << "( "; }
+  void visit(typed_lisp::list* node) override {
+    std::cout << "\nsize: " << node->children.size() << std::endl;
+    // std::cout << "( ";
+  }
 };
 
 int main() {
-  std::string input = "(+ 1 (* 2 3) 4)";
+  std::string input = R"(
+    (def fact : Int (n: Int)
+      (if (= n 0)
+          1
+          (* n (fact (- n 1)))))
+  )";
+
   typed_lisp::lisp_parser parser(input);
 
   try {
-    std::shared_ptr<typed_lisp::lisp_node> root = parser.parse();
+    std::shared_ptr<typed_lisp::node> root = parser.parse();
     tokens_print_visitor visitor;
     root->accept(&visitor);
   } catch (const std::exception& e) {
-    std::cerr << "Parsing error: " << e.what() << std::endl;
+    std::cerr << "parsing error: " << e.what() << std::endl;
   }
 
   return 0;
