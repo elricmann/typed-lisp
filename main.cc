@@ -56,8 +56,16 @@ class lisp_parser {
   size_t current_pos = 0;
 
   void skip_whitespace() {
-    while (current_pos < input.length() && std::isspace(input[current_pos])) {
-      current_pos++;
+    while (current_pos < input.length()) {
+      if (std::isspace(input[current_pos])) {
+        current_pos++;                         // regular whitespace
+      } else if (input[current_pos] == ';') {  // comments
+        while (current_pos < input.length() && input[current_pos] != '\n') {
+          current_pos++;
+        }
+      } else {
+        break;
+      }
     }
   }
 
@@ -702,6 +710,11 @@ void register_builtins(std::shared_ptr<scope> scope) {
   scope->define_type(":", ty.make_function_type(type_var_a, type_var_b));
   scope->define_type("def", ty.make_function_type(type_var_a, type_var_b));
   scope->define_type("let", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("set", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("if", ty.make_function_type(type_var_a, type_var_b));
+  // @fix: why does this fix the unbound issue?
+  scope->define_type("int", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("n", ty.make_function_type(type_var_a, type_var_b));
 
   scope->define_type(
       "+", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
@@ -723,45 +736,45 @@ void register_builtins(std::shared_ptr<scope> scope) {
 }  // namespace typed_lisp
 
 int main() {
-  typed_lisp::type_system ty;
-  typed_lisp::type_env env;
+  // typed_lisp::type_system ty;
+  // typed_lisp::type_env env;
 
-  auto int_type = ty.get_type("int");
-  auto bool_type = ty.get_type("bool");
-  auto string_type = ty.get_type("string");
+  // auto int_type = ty.get_type("int");
+  // auto bool_type = ty.get_type("bool");
+  // auto string_type = ty.get_type("string");
 
-  // inst: (int -> bool)
-  auto pred_type = ty.make_function_type(int_type, bool_type);
-  env.insert("f", pred_type);
+  // // inst: (int -> bool)
+  // auto pred_type = ty.make_function_type(int_type, bool_type);
+  // env.insert("f", pred_type);
 
-  // check: ('a -> 'a)
-  auto type_var_a = ty.fresh_var();
-  auto identity_type = ty.make_function_type(type_var_a, type_var_a);
-  env.insert("identity", identity_type);
+  // // check: ('a -> 'a)
+  // auto type_var_a = ty.fresh_var();
+  // auto identity_type = ty.make_function_type(type_var_a, type_var_a);
+  // env.insert("identity", identity_type);
 
-  // check HOF: ((int -> bool) -> string)
-  auto higher_order = ty.make_function_type(
-      ty.make_function_type(int_type, bool_type), string_type);
-  env.insert("describe_predicate", higher_order);
+  // // check HOF: ((int -> bool) -> string)
+  // auto higher_order = ty.make_function_type(
+  //     ty.make_function_type(int_type, bool_type), string_type);
+  // env.insert("describe_predicate", higher_order);
 
-  try {
-    auto identity_int = ty.make_function_type(int_type, type_var_a);
-    ty.unify(identity_type, identity_int);
-    std::cout << "identity can take int: "
-              << ty.get_final_type(identity_int)->to_string() << "\n";
+  // try {
+  //   auto identity_int = ty.make_function_type(int_type, type_var_a);
+  //   ty.unify(identity_type, identity_int);
+  //   std::cout << "identity can take int: "
+  //             << ty.get_final_type(identity_int)->to_string() << "\n";
 
-    // check: predicate matches expected type
-    auto test_pred = ty.make_function_type(int_type, bool_type);
-    ty.unify(env.lookup("f"), test_pred);
-    std::cout << "valid predicate type check\n";
+  //   // check: predicate matches expected type
+  //   auto test_pred = ty.make_function_type(int_type, bool_type);
+  //   ty.unify(env.lookup("f"), test_pred);
+  //   std::cout << "valid predicate type check\n";
 
-    // (fails) trying to use string where int expected
-    auto bad_pred = ty.make_function_type(string_type, bool_type);
-    ty.unify(env.lookup("f"), bad_pred);
+  //   // (fails) trying to use string where int expected
+  //   auto bad_pred = ty.make_function_type(string_type, bool_type);
+  //   ty.unify(env.lookup("f"), bad_pred);
 
-  } catch (const std::runtime_error& e) {
-    std::cout << "type error: " << e.what() << "\n";
-  }
+  // } catch (const std::runtime_error& e) {
+  //   std::cout << "type error: " << e.what() << "\n";
+  // }
 
   // revisit this stuff when there is a wrapper context for types & modules
 
@@ -782,7 +795,7 @@ int main() {
   //   std::cerr << "parsing error: " << e.what() << std::endl;
   // }
 
-  std::ifstream file("tests/types.lsp");
+  std::ifstream file("tests/invalid-if-nested.lsp");
   std::string test_program((std::istreambuf_iterator<char>(file)),
                            std::istreambuf_iterator<char>());
 
@@ -792,7 +805,7 @@ int main() {
     std::shared_ptr<typed_lisp::node> ast = parser.parse();
     auto visitor = std::make_shared<typed_lisp::type_visitor>();
 
-    typed_lisp::register_builtins(visitor->global_scope);
+    /*@todo:fix*/ typed_lisp::register_builtins(visitor->global_scope);
 
     ast->accept(visitor.get());
 
