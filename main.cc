@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -26,7 +27,7 @@ class atom : public node {
   void accept(node_visitor* visitor) override;
 };
 
-class list : public node {
+class list : public node, public std::enable_shared_from_this<list> {
  public:
   std::vector<std::shared_ptr<node>> children;
 
@@ -54,6 +55,21 @@ class lisp_parser {
  private:
   std::string input;
   size_t current_pos = 0;
+  size_t current_line = 1;
+  size_t current_column = 1;
+
+  std::string get_line_at(size_t line_number) const {
+    std::istringstream stream(input);
+    std::string line;
+
+    for (size_t i = 1; i <= line_number; ++i) {
+      if (!std::getline(stream, line)) {
+        return "";
+      }
+    }
+
+    return line;
+  }
 
   void skip_whitespace() {
     while (current_pos < input.length()) {
@@ -127,15 +143,49 @@ class lisp_parser {
 
     return parse_expression();
   }
-};
 
-class tokens_print_visitor : public typed_lisp::node_visitor {
- public:
-  void visit(typed_lisp::atom* node) override {
-    std::cout << node->value << " ";
+  std::pair<size_t, size_t> get_current_location() const {
+    return {current_line, current_column};
   }
 
-  void visit(typed_lisp::list* node) override {
+  std::string get_context_line(size_t line_number) const {
+    return get_line_at(line_number);
+  }
+};
+
+std::string format_error(const std::string& message, size_t line, size_t column,
+                         const std::string& context,
+                         const std::string& type_repr,
+                         const std::string& hint) {
+  std::ostringstream oss;
+
+  const std::string red = "\033[1;31m";
+  const std::string green = "\033[1;32m";
+  const std::string yellow = "\033[1;33m";
+  const std::string blue = "\033[1;34m";
+  const std::string purple = "\033[1;35m";
+  const std::string reset = "\033[0m";
+
+  oss << red << "error: " << reset << message << "\n";
+  oss << purple << "  @ " << reset << "line " << line << ", col " << column
+      << "\n";
+
+  oss << blue << "  | " << reset << "\n";
+  oss << blue << "  | " << reset << context << "\n";
+  oss << blue << "  | " << reset << std::setw(column) << "^" << "\n";
+  oss << yellow << "  hint: " << reset << hint;
+
+  if (type_repr.size() > 0)
+    oss << purple << "\n  Γ ⊢ " << reset << type_repr << "\n";
+
+  return oss.str();
+}
+
+class tokens_print_visitor : public node_visitor {
+ public:
+  void visit(atom* node) override { std::cout << node->value << " "; }
+
+  void visit(list* node) override {
     std::cout << "\nsize: " << node->children.size() << std::endl;
     // std::cout << "( ";
   }
@@ -442,8 +492,9 @@ class type_visitor : public node_visitor,
 
   void visit_let(list* node) {
     if (node->children.size() != 5) {
-      errors.push_back(
-          "malformed let expression, expected (let name : type value)");
+      std::shared_ptr<typed_lisp::node> shared_node = node->shared_from_this();
+      with_error("malformed let expression", shared_node, nullptr,
+                 "expected (let name : type value)");
       return;
     }
 
@@ -453,8 +504,9 @@ class type_visitor : public node_visitor,
     auto value_node = node->children[4];
 
     if (!name_node || !colon || !type_node || colon->value != ":") {
-      errors.push_back(
-          "malformed let expression, expected (let name : type value)");
+      std::shared_ptr<typed_lisp::node> shared_node = node->shared_from_this();
+      with_error("malformed let expression", shared_node, nullptr,
+                 "expected (let name : type value)");
       return;
     }
 
@@ -660,7 +712,9 @@ class type_visitor : public node_visitor,
   }
 
  public:
-  type_visitor() {
+  lisp_parser& parser;
+
+  type_visitor(lisp_parser& p) : parser(p) {
     global_scope = std::make_shared<scope>();
     current_scope = global_scope;
   }
@@ -688,6 +742,17 @@ class type_visitor : public node_visitor,
     } else {
       visit_call(node);
     }
+  }
+
+  void with_error(const std::string& message, const std::shared_ptr<node>& node,
+                  const type_ptr& type = nullptr,
+                  const std::string& hint = nullptr) {
+    auto [line, column] = parser.get_current_location();
+    std::string context = parser.get_context_line(line);
+    std::string type_repr = type ? type->to_string() : "";
+
+    errors.push_back(
+        format_error(message, line, column, context, type_repr, hint));
   }
 
   const std::vector<std::string>& get_errors() const { return errors; }
@@ -795,7 +860,7 @@ int main() {
   //   std::cerr << "parsing error: " << e.what() << std::endl;
   // }
 
-  std::ifstream file("tests/invalid-if-nested.lsp");
+  std::ifstream file("tests/invalid-let-expr.lsp");
   std::string test_program((std::istreambuf_iterator<char>(file)),
                            std::istreambuf_iterator<char>());
 
@@ -803,7 +868,7 @@ int main() {
 
   try {
     std::shared_ptr<typed_lisp::node> ast = parser.parse();
-    auto visitor = std::make_shared<typed_lisp::type_visitor>();
+    auto visitor = std::make_shared<typed_lisp::type_visitor>(parser);
 
     /*@todo:fix*/ typed_lisp::register_builtins(visitor->global_scope);
 
@@ -815,10 +880,8 @@ int main() {
     if (errors.empty()) {
       std::cout << "no type errors found!\n";
     } else {
-      std::cout << "found " << errors.size() << " type errors:\n";
-
       for (const auto& error : errors) {
-        std::cout << "- " << error << "\n";
+        std::cout << error << "\n";
       }
     }
 
