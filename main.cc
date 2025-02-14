@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -293,6 +295,431 @@ class type_system {
   type_ptr get_final_type(const type_ptr& t) { return apply_substitution(t); }
 };
 
+class scope : public std::enable_shared_from_this<scope> {
+  // clang-format off
+  std::shared_ptr<scope>                            parent;
+  std::vector<std::shared_ptr<scope>>               children;
+  type_env                                          env;
+  type_system                                       types;
+  std::unordered_map<std::string, std::vector<int>> polymorphic_vars;
+  // clang-format on
+
+ public:
+  explicit scope(std::shared_ptr<scope> p = nullptr) : parent(p) {}
+
+  void add_child(std::shared_ptr<scope> child) { children.push_back(child); }
+
+  std::shared_ptr<scope> create_child() {
+    auto child = std::make_shared<scope>(shared_from_this());
+    add_child(child);
+    return child;
+  }
+
+  type_ptr lookup_type(const std::string& name) {
+    try {
+      auto t = env.lookup(name);
+
+      if (auto poly_vars = get_polymorphic_vars(name)) {
+        return instantiate_polymorphic_type(t, *poly_vars);
+      }
+
+      return t;
+    } catch (const std::runtime_error&) {
+      if (parent) return parent->lookup_type(name);
+      throw std::runtime_error("unbound variable: " + name);  // ??
+    }
+  }
+
+  void define_type(const std::string& name, type_ptr t,
+                   const std::vector<int>& poly_vars = {}) {
+    env.insert(name, t);
+
+    if (!poly_vars.empty()) {
+      polymorphic_vars[name] = poly_vars;
+    }
+  }
+
+  std::optional<std::vector<int>> get_polymorphic_vars(
+      const std::string& name) {
+    auto it = polymorphic_vars.find(name);
+
+    if (it != polymorphic_vars.end()) {
+      return it->second;
+    }
+
+    return std::nullopt;
+  }
+
+  type_ptr instantiate_polymorphic_type(type_ptr t,
+                                        const std::vector<int>& vars) {
+    std::unordered_map<int, type_ptr> subst;
+
+    for (int var : vars) {
+      subst[var] = types.fresh_var();
+    }
+
+    return t->substitute(subst);
+  }
+
+  type_system& get_type_system() { return types; }
+  std::shared_ptr<scope> get_parent() { return parent; }
+};
+
+class type_visitor : public node_visitor,
+                     public std::enable_shared_from_this<type_visitor> {
+ public:
+  std::shared_ptr<scope> global_scope;
+  std::shared_ptr<scope> current_scope;
+
+  struct var_binding {
+    std::string name;
+    type_ptr type;
+    std::shared_ptr<node> value;
+    std::vector<int> polymorphic_vars;
+  };
+
+  // clang-format off
+
+  bool entered_fn_block = false;
+  std::unordered_map<std::string, var_binding> bindings;
+  std::vector<std::string>                     errors;
+  type_ptr                                     current_type;
+  std::vector<std::shared_ptr<node>>           call_stack;
+
+  // clang-format on
+
+  type_ptr infer_literal(const std::string& value) {
+    if (value == "true" || value == "false")
+      return current_scope->get_type_system().get_type("bool");
+
+    try {
+      std::stoi(value);
+      return current_scope->get_type_system().get_type("int");
+    } catch (...) {
+    }
+
+    if (value.front() == '"' && value.back() == '"')
+      return current_scope->get_type_system().get_type("string");
+
+    if (value.front() == '\'') {
+      auto var = current_scope->get_type_system().fresh_var();
+      return var;
+    }
+
+    return current_scope->lookup_type(value);
+  }
+
+  type_ptr infer_binary_op(const std::string& op, type_ptr lhs, type_ptr rhs) {
+    auto& ts = current_scope->get_type_system();
+
+    try {
+      ts.unify(lhs, rhs);
+
+      if (op == "+" || op == "-" || op == "*" || op == "/") {
+        auto int_t = ts.get_type("int");
+        ts.unify(lhs, int_t);
+        return int_t;
+      }
+
+      if (op == "=" || op == "!=" || op == "<" || op == ">") {
+        return ts.get_type("bool");
+      }
+
+      throw std::runtime_error("unknown operator: " + op);
+    } catch (const std::runtime_error& e) {
+      errors.push_back(e.what());
+      return ts.fresh_var();
+    }
+  }
+
+  void visit_let(list* node) {
+    if (node->children.size() != 5) {
+      errors.push_back(
+          "malformed let expression, expected (let name : type value)");
+      return;
+    }
+
+    auto name_node = std::dynamic_pointer_cast<atom>(node->children[1]);
+    auto colon = std::dynamic_pointer_cast<atom>(node->children[2]);
+    auto type_node = std::dynamic_pointer_cast<atom>(node->children[3]);
+    auto value_node = node->children[4];
+
+    if (!name_node || !colon || !type_node || colon->value != ":") {
+      errors.push_back(
+          "malformed let expression, expected (let name : type value)");
+      return;
+    }
+
+    std::vector<int> poly_vars;
+    type_ptr declared_type;
+
+    if (type_node->value.front() == '\'') {
+      auto var = current_scope->get_type_system().fresh_var();
+      poly_vars.push_back(std::dynamic_pointer_cast<var_type>(var)->id);
+      declared_type = var;
+    } else {
+      declared_type =
+          current_scope->get_type_system().get_type(type_node->value);
+    }
+
+    value_node->accept(this);
+    auto value_type = current_type;
+
+    try {
+      current_scope->get_type_system().unify(declared_type, value_type);
+      current_scope->define_type(name_node->value, declared_type, poly_vars);
+      bindings[name_node->value] = {name_node->value, declared_type, value_node,
+                                    poly_vars};
+    } catch (const std::runtime_error& e) {
+      errors.push_back("type error in let binding: " + std::string(e.what()));
+    }
+  }
+
+  void visit_def(list* node) {
+    if (node->children.size() < 6) {
+      errors.push_back(
+          "malformed def expression, expected (def name : return_type (params) "
+          "body)");
+      return;
+    }
+
+    auto name_node = std::dynamic_pointer_cast<atom>(node->children[1]);
+    auto colon = std::dynamic_pointer_cast<atom>(node->children[2]);
+    auto ret_type_node = std::dynamic_pointer_cast<atom>(node->children[3]);
+    auto params = std::dynamic_pointer_cast<list>(node->children[4]);
+
+    if (!name_node || !colon || !ret_type_node || !params ||
+        colon->value != ":") {
+      errors.push_back("malformed def expression");
+      return;
+    }
+
+    auto fn_scope = current_scope->create_child();
+    auto prev_scope = current_scope;
+    current_scope = fn_scope;
+
+    std::vector<type_ptr> param_types;
+    std::vector<int> poly_vars;
+
+    for (size_t i = 0; i < params->children.size(); i += 3) {
+      if (i + 2 >= params->children.size()) {
+        errors.push_back("malformed parameter list");
+        continue;
+      }
+
+      auto param_name = std::dynamic_pointer_cast<atom>(params->children[i]);
+      auto param_colon =
+          std::dynamic_pointer_cast<atom>(params->children[i + 1]);
+      auto param_type =
+          std::dynamic_pointer_cast<atom>(params->children[i + 2]);
+
+      if (!param_name || !param_colon || !param_type ||
+          param_colon->value != ":") {
+        errors.push_back("malformed parameter");
+        continue;
+      }
+
+      type_ptr param_t;
+      if (param_type->value.front() == '\'') {
+        auto var = current_scope->get_type_system().fresh_var();
+        poly_vars.push_back(std::dynamic_pointer_cast<var_type>(var)->id);
+        param_t = var;
+      } else {
+        param_t = current_scope->get_type_system().get_type(param_type->value);
+      }
+
+      current_scope->define_type(param_name->value, param_t);
+      param_types.push_back(param_t);
+    }
+
+    type_ptr ret_t;
+    if (ret_type_node->value.front() == '\'') {
+      auto var = current_scope->get_type_system().fresh_var();
+      poly_vars.push_back(std::dynamic_pointer_cast<var_type>(var)->id);
+      ret_t = var;
+    } else {
+      ret_t = current_scope->get_type_system().get_type(ret_type_node->value);
+    }
+
+    auto body = node->children[5];
+    entered_fn_block = true;
+    body->accept(this);
+    auto body_type = current_type;
+    entered_fn_block = false;
+
+    try {
+      current_scope->get_type_system().unify(ret_t, body_type);
+    } catch (const std::runtime_error& e) {
+      errors.push_back("return type mismatch: " + std::string(e.what()));
+    }
+
+    type_ptr fn_type = ret_t;
+    for (auto it = param_types.rbegin(); it != param_types.rend(); ++it) {
+      fn_type =
+          current_scope->get_type_system().make_function_type(*it, fn_type);
+    }
+
+    current_scope = prev_scope;
+    current_scope->define_type(name_node->value, fn_type, poly_vars);
+  }
+
+  void visit_set(list* node) {
+    if (node->children.size() != 3) {
+      errors.push_back("malformed set expression, expected (set name value)");
+      return;
+    }
+
+    auto name_node = std::dynamic_pointer_cast<atom>(node->children[1]);
+    auto value_node = node->children[2];
+
+    if (!name_node) {
+      errors.push_back("malformed set expression");
+      return;
+    }
+
+    value_node->accept(this);
+    auto value_type = current_type;
+
+    try {
+      auto var_type = current_scope->lookup_type(name_node->value);
+      current_scope->get_type_system().unify(var_type, value_type);
+    } catch (const std::runtime_error& e) {
+      errors.push_back("type error in assignment: " + std::string(e.what()));
+    }
+  }
+
+  void visit_if(list* node) {
+    if (node->children.size() != 4) {
+      errors.push_back("malformed if expression, expected (if cond then else)");
+      return;
+    }
+
+    node->children[1]->accept(this);
+    auto cond_type = current_type;
+
+    try {
+      current_scope->get_type_system().unify(
+          cond_type, current_scope->get_type_system().get_type("bool"));
+    } catch (const std::runtime_error& e) {
+      errors.push_back("condition must be boolean: " + std::string(e.what()));
+    }
+
+    node->children[2]->accept(this);
+    auto then_type = current_type;
+
+    node->children[3]->accept(this);
+    auto else_type = current_type;
+
+    try {
+      current_scope->get_type_system().unify(then_type, else_type);
+      current_type = then_type;
+    } catch (const std::runtime_error& e) {
+      errors.push_back("branches have different types: " +
+                       std::string(e.what()));
+    }
+  }
+
+  void visit_call(list* node) {
+    if (node->children.empty()) return;
+
+    auto fn = std::dynamic_pointer_cast<atom>(node->children[0]);
+    if (!fn) {
+      errors.push_back("expected function name");
+      return;
+    }
+
+    std::vector<type_ptr> arg_types;
+    for (size_t i = 1; i < node->children.size(); ++i) {
+      node->children[i]->accept(this);
+      arg_types.push_back(current_type);
+    }
+
+    try {
+      auto fn_type = current_scope->lookup_type(fn->value);
+      auto result_type = current_scope->get_type_system().fresh_var();
+
+      type_ptr expected = result_type;
+      for (auto it = arg_types.rbegin(); it != arg_types.rend(); ++it) {
+        expected =
+            current_scope->get_type_system().make_function_type(*it, expected);
+      }
+
+      current_scope->get_type_system().unify(fn_type, expected);
+      current_type = result_type;
+    } catch (const std::runtime_error& e) {
+      errors.push_back("type error in function call: " + std::string(e.what()));
+    }
+  }
+
+ public:
+  type_visitor() {
+    global_scope = std::make_shared<scope>();
+    current_scope = global_scope;
+  }
+
+  void visit(atom* node) override { current_type = infer_literal(node->value); }
+
+  void visit(list* node) override {
+    if (node->children.empty()) return;
+
+    auto fst = std::dynamic_pointer_cast<atom>(node->children[0]);
+
+    if (!fst) {
+      errors.push_back("expected atom as first element of list");
+      return;
+    }
+
+    if (fst->value == "let") {
+      visit_let(node);
+    } else if (fst->value == "def") {
+      visit_def(node);
+    } else if (fst->value == "set") {
+      visit_set(node);
+    } else if (fst->value == "if") {
+      visit_if(node);
+    } else {
+      visit_call(node);
+    }
+  }
+
+  const std::vector<std::string>& get_errors() const { return errors; }
+};
+
+void register_builtins(std::shared_ptr<scope> scope) {
+  auto& ty = scope->get_type_system();
+
+  // register primitive types
+  auto int_t = ty.get_type("int");
+  auto bool_t = ty.get_type("bool");
+  auto string_t = ty.get_type("string");
+
+  auto type_var_a = ty.fresh_var();
+  auto type_var_b = ty.fresh_var();
+
+  // we need better heuristics to register ops, i.e. never bind to concrete
+  // types. additionally, skip the type specifier token instead of capturing
+
+  scope->define_type(":", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("def", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("let", ty.make_function_type(type_var_a, type_var_b));
+
+  scope->define_type(
+      "+", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
+  scope->define_type(
+      "-", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
+  scope->define_type(
+      "*", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
+  scope->define_type(
+      "/", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
+
+  scope->define_type(
+      "=", ty.make_function_type(int_t, ty.make_function_type(int_t, bool_t)));
+  scope->define_type(
+      ">", ty.make_function_type(int_t, ty.make_function_type(int_t, bool_t)));
+  scope->define_type(
+      "<", ty.make_function_type(int_t, ty.make_function_type(int_t, bool_t)));
+}
+
 }  // namespace typed_lisp
 
 int main() {
@@ -355,5 +782,35 @@ int main() {
   //   std::cerr << "parsing error: " << e.what() << std::endl;
   // }
 
-  return 0;
+  std::ifstream file("tests/types.lsp");
+  std::string test_program((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+
+  typed_lisp::lisp_parser parser(test_program);
+
+  try {
+    std::shared_ptr<typed_lisp::node> ast = parser.parse();
+    auto visitor = std::make_shared<typed_lisp::type_visitor>();
+
+    typed_lisp::register_builtins(visitor->global_scope);
+
+    ast->accept(visitor.get());
+
+    std::cout << "type checking:\n\n";
+    const auto& errors = visitor->get_errors();
+
+    if (errors.empty()) {
+      std::cout << "no type errors found!\n";
+    } else {
+      std::cout << "found " << errors.size() << " type errors:\n";
+
+      for (const auto& error : errors) {
+        std::cout << "- " << error << "\n";
+      }
+    }
+
+  } catch (const std::exception& e) {
+    std::cerr << "error: " << e.what() << std::endl;
+    return 1;
+  }
 }
