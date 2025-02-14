@@ -175,8 +175,15 @@ std::string format_error(const std::string& message, size_t line, size_t column,
   oss << blue << "  | " << reset << std::setw(column) << "^" << "\n";
   oss << yellow << "  hint: " << reset << hint;
 
-  if (type_repr.size() > 0)
-    oss << purple << "\n  Γ ⊢ " << reset << type_repr << "\n";
+  if (type_repr.size() > 0) {
+    oss << "\n\n        " << "??" << "\n";
+    oss << purple << "     —————————" << reset << " ... " << type_repr
+        << " ∈ Γ without implication"
+        << "\n";  // @todo: there needs to be flags for error kinds
+    oss << purple << "      Γ ⊢ " << reset << type_repr << "\n";
+    oss << "\n  constraint is unsatisfied unless deducing from opaque "
+           "context.";
+  }
 
   return oss.str();
 }
@@ -336,7 +343,7 @@ class type_system {
       return;
     }
 
-    throw std::runtime_error("type mismatch\nexpected " + t1->to_string() +
+    throw std::runtime_error("type mismatch, expected " + t1->to_string() +
                              " but found " + t2->to_string());
   }
 
@@ -531,7 +538,11 @@ class type_visitor : public node_visitor,
       bindings[name_node->value] = {name_node->value, declared_type, value_node,
                                     poly_vars};
     } catch (const std::runtime_error& e) {
-      errors.push_back("type error in let binding: " + std::string(e.what()));
+      std::shared_ptr<typed_lisp::node> shared_node = node->shared_from_this();
+      with_error("type error in let binding", shared_node, declared_type,
+                 std::string(e.what()));
+      // errors.push_back("type error in let binding: " +
+      // std::string(e.what()));
     }
   }
 
@@ -841,25 +852,6 @@ int main() {
   //   std::cout << "type error: " << e.what() << "\n";
   // }
 
-  // revisit this stuff when there is a wrapper context for types & modules
-
-  // std::string input = R"(
-  //   (def fact : Int (n: Int)
-  //     (if (= n 0)
-  //         1
-  //         (* n (fact (- n 1)))))
-  // )";
-
-  // typed_lisp::lisp_parser parser(input);
-
-  // try {
-  //   std::shared_ptr<typed_lisp::node> root = parser.parse();
-  //   typed_lisp::tokens_print_visitor visitor;
-  //   root->accept(&visitor);
-  // } catch (const std::exception& e) {
-  //   std::cerr << "parsing error: " << e.what() << std::endl;
-  // }
-
   std::ifstream file("tests/invalid-let-expr.lsp");
   std::string test_program((std::istreambuf_iterator<char>(file)),
                            std::istreambuf_iterator<char>());
@@ -874,7 +866,6 @@ int main() {
 
     ast->accept(visitor.get());
 
-    std::cout << "type checking:\n\n";
     const auto& errors = visitor->get_errors();
 
     if (errors.empty()) {
