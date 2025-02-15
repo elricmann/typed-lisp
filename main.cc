@@ -175,15 +175,16 @@ std::string format_error(const std::string& message, size_t line, size_t column,
   oss << blue << "  | " << reset << std::setw(column) << "^" << "\n";
   oss << yellow << "  hint: " << reset << hint;
 
-  if (type_repr.size() > 0) {
-    oss << "\n\n        " << "??" << "\n";
-    oss << purple << "     —————————" << reset << " ... " << type_repr
-        << " ∈ Γ without implication"
-        << "\n";  // @todo: there needs to be flags for error kinds
-    oss << purple << "      Γ ⊢ " << reset << type_repr << "\n";
-    oss << "\n  constraint is unsatisfied unless deducing from opaque "
-           "context.";
-  }
+  // @todo: optional detailed hints that can be enabled on error
+  // if (type_repr.size() > 0) {
+  //   oss << "\n\n        " << "??" << "\n";
+  //   oss << purple << "     —————————" << reset << " ... " << type_repr
+  //       << " ∈ Γ without implication"
+  //       << "\n";  // @todo: there needs to be flags for error kinds
+  //   oss << purple << "      Γ ⊢ " << reset << type_repr << "\n";
+  //   oss << "\n  constraint is unsatisfied unless deducing from opaque "
+  //          "context.";
+  // }
 
   return oss.str();
 }
@@ -685,8 +686,11 @@ class type_visitor : public node_visitor,
       current_scope->get_type_system().unify(then_type, else_type);
       current_type = then_type;
     } catch (const std::runtime_error& e) {
-      errors.push_back("branches have different types: " +
-                       std::string(e.what()));
+      std::shared_ptr<typed_lisp::node> shared_node = node->shared_from_this();
+      with_error("branches have different types", shared_node, nullptr,
+                 std::string(e.what()));
+      // errors.push_back("branches have different types: " +
+      //                  std::string(e.what()));
     }
   }
 
@@ -754,6 +758,9 @@ class type_visitor : public node_visitor,
       visit_call(node);
     }
   }
+
+  // @fix: there is this issue where duplicate logs appear filter based on
+  // line-column metadata, errors may need to be unordered_map
 
   void with_error(const std::string& message, const std::shared_ptr<node>& node,
                   const type_ptr& type = nullptr,
@@ -852,7 +859,7 @@ int main() {
   //   std::cout << "type error: " << e.what() << "\n";
   // }
 
-  std::ifstream file("tests/invalid-let-expr.lsp");
+  std::ifstream file("tests/invalid-operator.lsp");
   std::string test_program((std::istreambuf_iterator<char>(file)),
                            std::istreambuf_iterator<char>());
 
