@@ -585,6 +585,9 @@ class type_visitor : public node_visitor,
       auto param_type =
           std::dynamic_pointer_cast<atom>(params->children[i + 2]);
 
+      // std::cout << param_name->value << param_colon->value
+      // << param_type->value << "\n";
+
       if (!param_name || !param_colon || !param_type ||
           param_colon->value != ":") {
         errors.push_back("malformed parameter");
@@ -859,7 +862,7 @@ int main() {
   //   std::cout << "type error: " << e.what() << "\n";
   // }
 
-  std::ifstream file("tests/invalid-operator.lsp");
+  std::ifstream file("tests/invalid-def-extended.lsp");
   std::string test_program((std::istreambuf_iterator<char>(file)),
                            std::istreambuf_iterator<char>());
 
