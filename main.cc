@@ -709,6 +709,8 @@ class type_visitor : public node_visitor,
       return;
     }
 
+    std::cout << "--> entering call: " << fn->value << "\n";
+
     std::vector<type_ptr> arg_types;
     for (size_t i = 1; i < node->children.size(); ++i) {
       node->children[i]->accept(this);
@@ -725,10 +727,15 @@ class type_visitor : public node_visitor,
             current_scope->get_type_system().make_function_type(*it, expected);
       }
 
+      std::cout << "expected: " << expected->to_string() << "\n";
+
       current_scope->get_type_system().unify(fn_type, expected);
       current_type = result_type;
     } catch (const std::runtime_error& e) {
-      errors.push_back("type error in function call: " + std::string(e.what()));
+      // errors.push_back("type error in function call: " +
+      // std::string(e.what()));
+      with_error("type error in call expr", node->shared_from_this(), nullptr,
+                 std::string(e.what()));
     }
   }
 
@@ -804,7 +811,9 @@ void register_builtins(std::shared_ptr<scope> scope) {
   // @fix: why does this fix the unbound issue?
   scope->define_type("int", ty.make_function_type(type_var_a, type_var_b));
   scope->define_type("bool", ty.make_function_type(type_var_a, type_var_b));
-  scope->define_type("n", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("k", ty.make_function_type(type_var_a, type_var_b));
+
+  scope->define_type("program", ty.make_function_type(int_t, type_var_b));
 
   scope->define_type(
       "+", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
