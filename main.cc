@@ -390,9 +390,10 @@ class scope : public std::enable_shared_from_this<scope> {
       }
 
       return t;
-    } catch (const std::runtime_error&) {
+    } catch (const std::runtime_error& e) {
       if (parent) return parent->lookup_type(name);
-      throw std::runtime_error("unbound variable: " + name);  // ??
+      std::cout << "=== lookup issue here===\n";
+      throw std::runtime_error(e.what());  // ??
     }
   }
 
@@ -616,6 +617,8 @@ class type_visitor : public node_visitor,
       ret_t = current_scope->get_type_system().get_type(ret_type_node->value);
     }
 
+    std::cout << "ret_t: " << ret_t->to_string() << "\n";
+
     auto body = node->children[5];
     entered_fn_block = true;
     body->accept(this);
@@ -800,6 +803,7 @@ void register_builtins(std::shared_ptr<scope> scope) {
   scope->define_type("if", ty.make_function_type(type_var_a, type_var_b));
   // @fix: why does this fix the unbound issue?
   scope->define_type("int", ty.make_function_type(type_var_a, type_var_b));
+  scope->define_type("bool", ty.make_function_type(type_var_a, type_var_b));
   scope->define_type("n", ty.make_function_type(type_var_a, type_var_b));
 
   scope->define_type(
@@ -862,7 +866,7 @@ int main() {
   //   std::cout << "type error: " << e.what() << "\n";
   // }
 
-  std::ifstream file("tests/invalid-def-extended.lsp");
+  std::ifstream file("tests/valid-def-expr.lsp");
   std::string test_program((std::istreambuf_iterator<char>(file)),
                            std::istreambuf_iterator<char>());
 
