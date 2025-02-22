@@ -537,6 +537,14 @@ class type_visitor : public node_visitor,
     try {
       current_scope->get_type_system().unify(declared_type, value_type);
       current_scope->define_type(name_node->value, declared_type, poly_vars);
+
+      // if (bindings.find(name_node->value) != bindings.end()) {
+      //   std::cout << name_node->value << " already defined\n";
+      //   with_error("redefinition of variable", node->shared_from_this(),
+      //              declared_type, "variable already defined");
+      //   return;
+      // }
+
       bindings[name_node->value] = {name_node->value, declared_type, value_node,
                                     poly_vars};
     } catch (const std::runtime_error& e) {
@@ -727,6 +735,7 @@ class type_visitor : public node_visitor,
             current_scope->get_type_system().make_function_type(*it, expected);
       }
 
+      std::cout << "fn: " << fn->value << "\n";
       std::cout << "expected: " << expected->to_string() << "\n";
 
       current_scope->get_type_system().unify(fn_type, expected);
@@ -813,7 +822,9 @@ void register_builtins(std::shared_ptr<scope> scope) {
   scope->define_type("bool", ty.make_function_type(type_var_a, type_var_b));
   scope->define_type("k", ty.make_function_type(type_var_a, type_var_b));
 
-  scope->define_type("program", ty.make_function_type(int_t, type_var_b));
+  // we reduce lhs and rhs to a single type, and then unify the two
+  // program is a callable type that just composes arg types
+  scope->define_type("program", ty.make_function_type(type_var_a, type_var_b));
 
   scope->define_type(
       "+", ty.make_function_type(int_t, ty.make_function_type(int_t, int_t)));
