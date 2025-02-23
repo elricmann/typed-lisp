@@ -1,7 +1,8 @@
 (program
-  (def add : bool ()
+  (def add : int ()
     ;; (let x : int 1)
-    true) ;; returning this literal works
+    ;; (set x true)
+    7) ;; returning this literal works
 
   ;; issue with the unbound variables is the def scope
   ;; also, infer_binary_op is not actually used anywhere yet

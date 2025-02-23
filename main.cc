@@ -670,7 +670,9 @@ class type_visitor : public node_visitor,
       auto var_type = current_scope->lookup_type(name_node->value);
       current_scope->get_type_system().unify(var_type, value_type);
     } catch (const std::runtime_error& e) {
-      errors.push_back("type error in assignment: " + std::string(e.what()));
+      // errors.push_back("type error in assignment: " + std::string(e.what()));
+      with_error("type error in assignment", name_node, nullptr,
+                 std::string(e.what()));
     }
   }
 
